@@ -11,6 +11,8 @@ from pathlib import Path
 import arxiv
 import hashlib
 from typing import Set, Optional
+import time
+from datetime import datetime, timedelta
 
 
 def get_downloaded_papers(download_dir: Path) -> Set[str]:
@@ -33,29 +35,26 @@ def sanitize_filename(filename: str) -> str:
     return filename.strip()
 
 
-def download_papers(query: str, max_results: Optional[int], download_dir: Path) -> None:
-    """Download papers matching the query to the specified directory."""
-    
-    # Create download directory if it doesn't exist
-    download_dir.mkdir(parents=True, exist_ok=True)
+def download_papers_batch(query: str, max_results: int, download_dir: Path, start_date: str = None, end_date: str = None) -> tuple[int, int]:
+    """Download a batch of papers with optional date range. Returns (downloaded, skipped) counts."""
     
     # Get already downloaded papers
     downloaded_papers = get_downloaded_papers(download_dir)
     
-    # Handle unlimited downloads
-    if max_results is None:
-        max_results = 1000000  # Set to very large number for unlimited downloads
-        limit_text = "no limit (ALL papers)"
+    # Add date range to query if specified
+    if start_date and end_date:
+        query = f"({query}) AND submittedDate:[{start_date} TO {end_date}]"
+        print(f"Searching {start_date} to {end_date}: '{query}'")
     else:
-        limit_text = str(max_results)
+        print(f"Searching: '{query}'")
     
-    print(f"Searching for papers with query: '{query}'")
-    print(f"Download directory: {download_dir}")
-    print(f"Download limit: {limit_text}")
-    print(f"Already downloaded: {len(downloaded_papers)} papers")
+    # Create arXiv client with optimized settings
+    client = arxiv.Client(
+        page_size=1000,  # Larger page size for efficiency
+        delay_seconds=3.0,  # Respect rate limits
+        num_retries=3
+    )
     
-    # Create arXiv client and search
-    client = arxiv.Client()
     search = arxiv.Search(
         query=query,
         max_results=max_results,
@@ -78,7 +77,6 @@ def download_papers(query: str, max_results: Optional[int], download_dir: Path) 
             # Create safe filename
             title = sanitize_filename(result.title)
             filename = f"{arxiv_id}_{title[:100]}.pdf"  # Limit title length
-            filepath = download_dir / filename
             
             try:
                 print(f"Downloading: {result.title}")
@@ -90,15 +88,90 @@ def download_papers(query: str, max_results: Optional[int], download_dir: Path) 
                 print(f"✗ Failed to download {arxiv_id}: {e}")
                 continue
     
+    except Exception as e:
+        error_msg = str(e)
+        if "unexpectedly empty" in error_msg.lower():
+            print("Reached end of available papers for this batch")
+        else:
+            print(f"Error in batch: {e}")
+            raise e
+    
+    return downloaded_count, skipped_count
+
+
+def download_papers(query: str, max_results: Optional[int], download_dir: Path) -> None:
+    """Download papers matching the query to the specified directory."""
+    
+    # Create download directory if it doesn't exist
+    download_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Get already downloaded papers
+    downloaded_papers = get_downloaded_papers(download_dir)
+    
+    print(f"Searching for papers with query: '{query}'")
+    print(f"Download directory: {download_dir}")
+    print(f"Already downloaded: {len(downloaded_papers)} papers")
+    
+    total_downloaded = 0
+    total_skipped = 0
+    
+    try:
+        if max_results is None:
+            # For unlimited downloads, use time-based chunking to bypass 30k API limit
+            print("Download limit: no limit (ALL papers)")
+            print("Using time-based chunking to access all papers...")
+            
+            # Start from 2007 (when arXiv started) to present
+            start_year = 2007
+            current_year = datetime.now().year
+            
+            interrupted = False
+            for year in range(start_year, current_year + 1):
+                if interrupted:
+                    break
+                    
+                # Split each year into quarters to stay under 30k limit per batch
+                quarters = [
+                    (f"{year}01", f"{year}03"),  # Q1
+                    (f"{year}04", f"{year}06"),  # Q2  
+                    (f"{year}07", f"{year}09"),  # Q3
+                    (f"{year}10", f"{year}12")   # Q4
+                ]
+                
+                for start_month, end_month in quarters:
+                    try:
+                        print(f"\n--- Processing {year} Q{quarters.index((start_month, end_month))+1} ---")
+                        downloaded, skipped = download_papers_batch(
+                            query, 30000, download_dir, 
+                            f"{start_month}01", f"{end_month}31"
+                        )
+                        total_downloaded += downloaded
+                        total_skipped += skipped
+                        
+                        # Add delay between batches to be respectful
+                        if downloaded > 0:
+                            print(f"Batch complete: {downloaded} downloaded, {skipped} skipped")
+                            time.sleep(5)
+                            
+                    except KeyboardInterrupt:
+                        print(f"\nDownload interrupted by user")
+                        interrupted = True
+                        break
+                    except Exception as e:
+                        print(f"Error in batch {year} Q{quarters.index((start_month, end_month))+1}: {e}")
+                        continue
+        else:
+            # For limited downloads, use simple approach
+            print(f"Download limit: {max_results}")
+            total_downloaded, total_skipped = download_papers_batch(query, max_results, download_dir)
+    
     except KeyboardInterrupt:
         print("\nDownload interrupted by user")
-    except Exception as e:
-        print(f"Error during search/download: {e}")
-        sys.exit(1)
     
-    print(f"\nDownload complete!")
-    print(f"Downloaded: {downloaded_count} new papers")
-    print(f"Skipped: {skipped_count} already downloaded papers")
+    print(f"\n=== FINAL SUMMARY ===")
+    print(f"Total downloaded: {total_downloaded} new papers")
+    print(f"Total skipped: {total_skipped} already downloaded papers")
+    print(f"Total papers in library: {len(get_downloaded_papers(download_dir))} papers")
 
 
 def main():
