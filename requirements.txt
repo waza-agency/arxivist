@@ -1,1 +1,8 @@
 arxiv
+llama-index
+llama-index-vector-stores-neo4jvector
+llama-index-embeddings-openai
+llama-index-embeddings-huggingface
+neo4j
+python-dotenv
+PyPDF2

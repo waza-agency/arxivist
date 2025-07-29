@@ -4,7 +4,12 @@
       "WebFetch(domain:arxiv.org)",
       "WebFetch(domain:info.arxiv.org)",
       "Bash(chmod:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker logs:*)",
+      "Bash(python:*)",
+      "Bash(ls:*)",
+      "Bash(rm:*)"
     ],
     "deny": []
   }
