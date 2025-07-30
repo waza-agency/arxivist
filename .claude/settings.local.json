@@ -9,7 +9,8 @@
       "Bash(docker logs:*)",
       "Bash(python:*)",
       "Bash(ls:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(find:*)"
     ],
     "deny": []
   }

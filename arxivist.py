@@ -58,7 +58,8 @@ def download_papers_batch(query: str, max_results: int, download_dir: Path, star
     search = arxiv.Search(
         query=query,
         max_results=max_results,
-        sort_by=arxiv.SortCriterion.SubmittedDate
+        sort_by=arxiv.SortCriterion.SubmittedDate,
+        sort_order=arxiv.SortOrder.Descending
     )
     
     downloaded_count = 0
@@ -121,45 +122,88 @@ def download_papers(query: str, max_results: Optional[int], download_dir: Path) 
             print("Download limit: no limit (ALL papers)")
             print("Using time-based chunking to access all papers...")
             
-            # Start from 2007 (when arXiv started) to present
+            # Start from present and go backwards to get newest papers first
             start_year = 2007
             current_year = datetime.now().year
+            current_month = datetime.now().month
             
             interrupted = False
-            for year in range(start_year, current_year + 1):
+            
+            # Process years in reverse order (newest first)
+            for year in range(current_year, start_year - 1, -1):
                 if interrupted:
                     break
-                    
-                # Split each year into quarters to stay under 30k limit per batch
-                quarters = [
-                    (f"{year}01", f"{year}03"),  # Q1
-                    (f"{year}04", f"{year}06"),  # Q2  
-                    (f"{year}07", f"{year}09"),  # Q3
-                    (f"{year}10", f"{year}12")   # Q4
-                ]
                 
-                for start_month, end_month in quarters:
-                    try:
-                        print(f"\n--- Processing {year} Q{quarters.index((start_month, end_month))+1} ---")
-                        downloaded, skipped = download_papers_batch(
-                            query, 30000, download_dir, 
-                            f"{start_month}01", f"{end_month}31"
-                        )
-                        total_downloaded += downloaded
-                        total_skipped += skipped
-                        
-                        # Add delay between batches to be respectful
-                        if downloaded > 0:
-                            print(f"Batch complete: {downloaded} downloaded, {skipped} skipped")
-                            time.sleep(5)
+                # Determine the month range for current year
+                if year == current_year:
+                    # For current year, only go up to current month
+                    end_month = current_month
+                else:
+                    end_month = 12
+                
+                # Use smaller batches for recent years (2020+) due to higher paper volume
+                # Use monthly batches for 2020+ to avoid 30k limit, quarterly for older years
+                if year >= 2020:
+                    # Monthly batches for recent high-volume years
+                    for month in range(end_month, 0, -1):  # Reverse order within year
+                        try:
+                            month_str = f"{month:02d}"
+                            print(f"\n--- Processing {year}-{month_str} (monthly batch) ---")
+                            downloaded, skipped = download_papers_batch(
+                                query, 25000, download_dir,  # Reduced batch size for safety
+                                f"{year}{month_str}01", f"{year}{month_str}31"
+                            )
+                            total_downloaded += downloaded
+                            total_skipped += skipped
                             
-                    except KeyboardInterrupt:
-                        print(f"\nDownload interrupted by user")
-                        interrupted = True
-                        break
-                    except Exception as e:
-                        print(f"Error in batch {year} Q{quarters.index((start_month, end_month))+1}: {e}")
-                        continue
+                            # Add delay between batches to be respectful
+                            if downloaded > 0:
+                                print(f"Batch complete: {downloaded} downloaded, {skipped} skipped")
+                                time.sleep(5)
+                                
+                        except KeyboardInterrupt:
+                            print(f"\nDownload interrupted by user")
+                            interrupted = True
+                            break
+                        except Exception as e:
+                            print(f"Error in batch {year}-{month_str}: {e}")
+                            continue
+                else:
+                    # Quarterly batches for older years (lower paper volume)
+                    quarters = [
+                        (f"{year}10", f"{year}12"),  # Q4 (reversed order)
+                        (f"{year}07", f"{year}09"),  # Q3
+                        (f"{year}04", f"{year}06"),  # Q2  
+                        (f"{year}01", f"{year}03"),  # Q1
+                    ]
+                    
+                    # Adjust quarters for partial years
+                    if year == current_year:
+                        quarters = [(f"{year}{str(((end_month-1)//3)*3+1).zfill(2)}", f"{year}{end_month:02d}")]
+                    
+                    for start_month, end_month_q in quarters:
+                        try:
+                            quarter_num = 4 - quarters.index((start_month, end_month_q))
+                            print(f"\n--- Processing {year} Q{quarter_num} (quarterly batch) ---")
+                            downloaded, skipped = download_papers_batch(
+                                query, 30000, download_dir, 
+                                f"{start_month}01", f"{end_month_q}31"
+                            )
+                            total_downloaded += downloaded
+                            total_skipped += skipped
+                            
+                            # Add delay between batches to be respectful
+                            if downloaded > 0:
+                                print(f"Batch complete: {downloaded} downloaded, {skipped} skipped")
+                                time.sleep(5)
+                                
+                        except KeyboardInterrupt:
+                            print(f"\nDownload interrupted by user")
+                            interrupted = True
+                            break
+                        except Exception as e:
+                            print(f"Error in batch {year} Q{quarter_num}: {e}")
+                            continue
         else:
             # For limited downloads, use simple approach
             print(f"Download limit: {max_results}")
