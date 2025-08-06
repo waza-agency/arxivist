@@ -76,7 +76,8 @@ def setup_llama_index(use_local_embeddings: bool = True):
     if use_local_embeddings:
         embed_model = HuggingFaceEmbedding(
             model_name="sentence-transformers/all-MiniLM-L6-v2",
-            max_length=512
+            max_length=512,
+            device="cpu"
         )
         embedding_dimension = 384  # Dimension for all-MiniLM-L6-v2
     else:

@@ -35,8 +35,8 @@ def sanitize_filename(filename: str) -> str:
     return filename.strip()
 
 
-def download_papers_batch(query: str, max_results: int, download_dir: Path, start_date: str = None, end_date: str = None) -> tuple[int, int]:
-    """Download a batch of papers with optional date range. Returns (downloaded, skipped) counts."""
+def download_papers_batch(query: str, max_results: int, download_dir: Path, start_date: str = None, end_date: str = None) -> tuple[int, int, bool]:
+    """Download a batch of papers with optional date range. Returns (downloaded, skipped, hit_limit) counts."""
     
     # Get already downloaded papers
     downloaded_papers = get_downloaded_papers(download_dir)
@@ -64,9 +64,12 @@ def download_papers_batch(query: str, max_results: int, download_dir: Path, star
     
     downloaded_count = 0
     skipped_count = 0
+    result_count = 0
     
     try:
         for result in client.results(search):
+            result_count += 1
+            
             # Extract arXiv ID (remove version if present)
             arxiv_id = result.entry_id.split('/')[-1].split('v')[0]
             
@@ -97,7 +100,76 @@ def download_papers_batch(query: str, max_results: int, download_dir: Path, star
             print(f"Error in batch: {e}")
             raise e
     
-    return downloaded_count, skipped_count
+    # Check if we hit the API limit
+    hit_limit = result_count >= max_results
+    if hit_limit:
+        print(f"⚠️ Hit API limit ({max_results} results) - may need smaller time window")
+    
+    return downloaded_count, skipped_count, hit_limit
+
+
+def download_papers_with_adaptive_windows(query: str, download_dir: Path, start_date: str, end_date: str, window_type: str = "month") -> tuple[int, int]:
+    """Download papers with adaptive time window splitting when hitting API limits."""
+    from datetime import datetime, timedelta
+    import calendar
+    
+    total_downloaded = 0
+    total_skipped = 0
+    
+    if window_type == "month":
+        # Try monthly batch first
+        downloaded, skipped, hit_limit = download_papers_batch(query, 25000, download_dir, start_date, end_date)
+        total_downloaded += downloaded
+        total_skipped += skipped
+        
+        if hit_limit:
+            print(f"Month {start_date[:6]} hit limit, splitting into weeks...")
+            # Split month into weeks
+            start_dt = datetime.strptime(start_date, "%Y%m%d")
+            end_dt = datetime.strptime(end_date, "%Y%m%d")
+            
+            current_dt = start_dt
+            while current_dt <= end_dt:
+                week_end = min(current_dt + timedelta(days=6), end_dt)
+                week_downloaded, week_skipped = download_papers_with_adaptive_windows(
+                    query, download_dir, 
+                    current_dt.strftime("%Y%m%d"), 
+                    week_end.strftime("%Y%m%d"), 
+                    "week"
+                )
+                total_downloaded += week_downloaded
+                total_skipped += week_skipped
+                current_dt = week_end + timedelta(days=1)
+                
+    elif window_type == "week":
+        # Try weekly batch
+        downloaded, skipped, hit_limit = download_papers_batch(query, 25000, download_dir, start_date, end_date)
+        total_downloaded += downloaded
+        total_skipped += skipped
+        
+        if hit_limit:
+            print(f"Week {start_date}-{end_date} hit limit, splitting into days...")
+            # Split week into days
+            start_dt = datetime.strptime(start_date, "%Y%m%d")
+            end_dt = datetime.strptime(end_date, "%Y%m%d")
+            
+            current_dt = start_dt
+            while current_dt <= end_dt:
+                day_downloaded, day_skipped, _ = download_papers_batch(
+                    query, 25000, download_dir,
+                    current_dt.strftime("%Y%m%d"),
+                    current_dt.strftime("%Y%m%d")
+                )
+                total_downloaded += day_downloaded
+                total_skipped += day_skipped
+                current_dt += timedelta(days=1)
+                
+    else:  # day
+        downloaded, skipped, _ = download_papers_batch(query, 25000, download_dir, start_date, end_date)
+        total_downloaded += downloaded
+        total_skipped += skipped
+    
+    return total_downloaded, total_skipped
 
 
 def download_papers(query: str, max_results: Optional[int], download_dir: Path) -> None:
@@ -144,13 +216,13 @@ def download_papers(query: str, max_results: Optional[int], download_dir: Path) 
                 # Use smaller batches for recent years (2020+) due to higher paper volume
                 # Use monthly batches for 2020+ to avoid 30k limit, quarterly for older years
                 if year >= 2020:
-                    # Monthly batches for recent high-volume years
+                    # Monthly batches for recent high-volume years with adaptive windows
                     for month in range(end_month, 0, -1):  # Reverse order within year
                         try:
                             month_str = f"{month:02d}"
-                            print(f"\n--- Processing {year}-{month_str} (monthly batch) ---")
-                            downloaded, skipped = download_papers_batch(
-                                query, 25000, download_dir,  # Reduced batch size for safety
+                            print(f"\n--- Processing {year}-{month_str} (adaptive windows) ---")
+                            downloaded, skipped = download_papers_with_adaptive_windows(
+                                query, download_dir,
                                 f"{year}{month_str}01", f"{year}{month_str}31"
                             )
                             total_downloaded += downloaded
@@ -185,7 +257,7 @@ def download_papers(query: str, max_results: Optional[int], download_dir: Path) 
                         try:
                             quarter_num = 4 - quarters.index((start_month, end_month_q))
                             print(f"\n--- Processing {year} Q{quarter_num} (quarterly batch) ---")
-                            downloaded, skipped = download_papers_batch(
+                            downloaded, skipped, _ = download_papers_batch(
                                 query, 30000, download_dir, 
                                 f"{start_month}01", f"{end_month_q}31"
                             )
@@ -207,7 +279,7 @@ def download_papers(query: str, max_results: Optional[int], download_dir: Path) 
         else:
             # For limited downloads, use simple approach
             print(f"Download limit: {max_results}")
-            total_downloaded, total_skipped = download_papers_batch(query, max_results, download_dir)
+            total_downloaded, total_skipped, _ = download_papers_batch(query, max_results, download_dir)
     
     except KeyboardInterrupt:
         print("\nDownload interrupted by user")
