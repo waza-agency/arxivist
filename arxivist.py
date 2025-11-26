@@ -16,14 +16,30 @@ from datetime import datetime, timedelta
 
 
 def get_downloaded_papers(download_dir: Path) -> Set[str]:
-    """Get set of already downloaded paper IDs from filenames."""
+    """Get set of already downloaded paper IDs from filenames, excluding empty files."""
     downloaded = set()
+    empty_files = []
+    
     if download_dir.exists():
         for file in download_dir.glob("*.pdf"):
+            # Check if file is empty (0 bytes)
+            if file.stat().st_size == 0:
+                empty_files.append(file.name)
+                continue
+                
             # Extract arXiv ID from filename (assumes format: ID_title.pdf)
             if "_" in file.stem:
                 arxiv_id = file.stem.split("_")[0]
                 downloaded.add(arxiv_id)
+    
+    # Report empty files found
+    if empty_files:
+        print(f"Found {len(empty_files)} empty files that will be re-downloaded:")
+        for empty_file in empty_files[:5]:  # Show first 5
+            print(f"  - {empty_file}")
+        if len(empty_files) > 5:
+            print(f"  ... and {len(empty_files) - 5} more")
+    
     return downloaded
 
 
@@ -81,12 +97,24 @@ def download_papers_batch(query: str, max_results: int, download_dir: Path, star
             # Create safe filename
             title = sanitize_filename(result.title)
             filename = f"{arxiv_id}_{title[:100]}.pdf"  # Limit title length
+            file_path = download_dir / filename
+            
+            # Remove existing empty file if present
+            if file_path.exists() and file_path.stat().st_size == 0:
+                print(f"Removing empty file: {filename}")
+                file_path.unlink()
             
             try:
                 print(f"Downloading: {result.title}")
                 result.download_pdf(dirpath=str(download_dir), filename=filename)
-                downloaded_count += 1
-                print(f"✓ Downloaded: {filename}")
+                
+                # Verify the download was successful (non-empty)
+                if file_path.exists() and file_path.stat().st_size > 0:
+                    downloaded_count += 1
+                    print(f"✓ Downloaded: {filename} ({file_path.stat().st_size} bytes)")
+                else:
+                    print(f"✗ Download failed or file is empty: {filename}")
+                    continue
                 
             except Exception as e:
                 print(f"✗ Failed to download {arxiv_id}: {e}")
